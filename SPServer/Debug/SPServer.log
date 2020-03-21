@@ -1,0 +1,8 @@
+﻿  SPServer.cpp
+C:\Users\YongHwan\source\repos\SPServer\SPServer\SPServer.cpp(71,18): warning C4244: '초기화 중': '_Rep'에서 'int'(으)로 변환하면서 데이터가 손실될 수 있습니다.
+          with
+          [
+              _Rep=__int64
+          ]
+C:\Users\YongHwan\source\repos\SPServer\SPServer\SPServer.cpp(175,8): warning C4101: 'flags' :참조되지 않은 지역 변수입니다.
+C:\Users\YongHwan\source\repos\SPServer\SPServer\SPServer.cpp(242): error C4700: 초기화되지 않은 'hThread' 지역 변수를 사용했습니다.

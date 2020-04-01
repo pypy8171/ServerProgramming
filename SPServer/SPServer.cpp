@@ -3,54 +3,139 @@
 
 #include <iostream>
 #include <thread>
-#include <WinSock2.h>
-#include <vector>
+#include <WS2tcpip.h>
+#include <map>
+
 #include "protocol.h"
 
 #pragma comment(lib, "Ws2_32.lib")
 
 using namespace std;
 
+#define MAX_CLIENTS 10
 
-typedef struct PlayerSockInfo
+struct SOCKETINFO
 {
-	bool	connected;
-	SOCKET	socket;
-	char	packet_buf[MAX_BUFFER];
+	WSAOVERLAPPED	overlapped;
+	WSABUF			senddataBuf[MAX_CLIENTS];
+	WSABUF			recvdataBuf[MAX_CLIENTS];
+	SOCKET			socket;
+	char			recvmessageBuf[MAX_BUFFER];
+	char			sendmessageBuf[MAX_BUFFER];
 
-	int		x, y;
+	int				x, y;
+	bool			connected;
+};
 
-}PLAYERSOCKINFO;
-
-typedef struct SockInfo
-{
-	SOCKET	socket;
-	char	packet_buf[MAX_BUFFER];
-
-	int		recvbytes;
-	int		sendbytes;
-
-}SOCKINFO;
-
-PLAYERSOCKINFO clients[MAX_USER];
+map<SOCKET, SOCKETINFO> clients;
 
 // 오류 출력 함수
 void err_quit(char* msg);
 void err_display(char* msg);
-int recvn(SOCKET s, char* buf, int len, int flags);
-void RemoveSocketInfo(int nIndex);
-void process_packet(sc_packet_pos pos);
-void send_packet(int key, char* packet);
-void send_pos_packet(/*char to, char obj*/);
-bool AddSocketInfo(SOCKET sock);
 
-int nTotalSockets = 0;
-SOCKINFO* SocketInfoArray[FD_SETSIZE];
+int GetID();
+void process_packet(int id, char* szMessagebuf);
+void login_packet(int id, SOCKET soc);
 
-sc_packet_pos pos;
+void CALLBACK recv_callback(DWORD Error, DWORD dataBytes, LPWSAOVERLAPPED oerlapped, DWORD lnFlags);
+void CALLBACK send_callback(DWORD Error, DWORD dataBytes, LPWSAOVERLAPPED oerlapped, DWORD lnFlags);
 
-int g_x, g_y = 0;
-bool g_connect = false;
+// 10명 넘을시 짤라내거나 대기한다
+
+int g_iCurID = -1;
+
+void recv_callback(DWORD Error, DWORD dataBytes, LPWSAOVERLAPPED overlapped, DWORD lnFlags)
+{
+	SOCKET client_s = reinterpret_cast<int>(overlapped->hEvent);
+
+	DWORD sendBytes = 0;
+	DWORD receiveBytes = 0;
+	DWORD flags = 0;
+
+	if (dataBytes == 0)
+	{
+		closesocket(clients[client_s].socket);
+		clients.erase(client_s);
+		return;
+	}
+
+	int iIdx = -1;
+
+	for (int i = 0; i < g_iCurID + 1; ++i)
+	{
+		if (client_s == clients[i].socket) //
+		{
+			clients[i].recvmessageBuf[dataBytes] = 0;
+			cout << "from clients : " << clients[i].recvmessageBuf << " (" << dataBytes << ") bytes)" << endl;
+
+			clients[i].recvdataBuf[i].len = dataBytes;
+			memset(&(clients[i].overlapped), 0x00, sizeof(WSAOVERLAPPED));
+			clients[i].overlapped.hEvent = (HANDLE)client_s;
+
+			process_packet(i, clients[i].recvmessageBuf);
+			iIdx = i;
+		}
+	}
+
+	for (int i = 0; i < g_iCurID + 1; ++i)
+	{
+		//if(clients[i].connected)
+
+		if (WSASend(clients[i].socket, &(clients[iIdx].senddataBuf[iIdx]), g_iCurID + 1, &dataBytes, 0,
+			&(clients[i].overlapped), send_callback) == SOCKET_ERROR)
+		{
+			if (WSAGetLastError() != WSA_IO_PENDING)
+			{
+				cout << "error - Fail WSASend(error_code : %d) : " << WSAGetLastError() << endl;
+			}
+		}
+	}
+}
+
+void send_callback(DWORD Error, DWORD dataBytes, LPWSAOVERLAPPED overlapped, DWORD lnFlags)
+{
+	DWORD sendBytes = 0;
+	DWORD receiveBytes = 0;
+	DWORD flags = 0;
+
+	SOCKET client_s = reinterpret_cast<int>(overlapped->hEvent);
+
+	if (dataBytes == 0)
+	{
+		closesocket(clients[client_s].socket);
+		clients.erase(client_s);
+		return;
+	}  // 클라이언트가 closesocket을 했을 경우
+
+	// WSASend(응답에 대한)의 콜백일 경우
+	for (int i = 0; i < MAX_CLIENTS; ++i)
+	{
+		if (client_s == clients[i].socket) //
+		{
+			clients[i].senddataBuf[i].len = MAX_BUFFER;
+			clients[i].senddataBuf[i].buf = clients[i].sendmessageBuf;
+
+			cout << "trace - Send message : " << clients[i].sendmessageBuf << " (" << dataBytes << " bytes)" << endl;
+			memset(&(clients[i].overlapped), 0x00, sizeof(WSAOVERLAPPED));
+			clients[i].overlapped.hEvent = (HANDLE)client_s;
+		}
+	}
+
+	for (int i = 0; i < g_iCurID + 1; ++i)
+	{
+		//if(clients[i].connected)
+
+		if (WSARecv(clients[i].socket, &clients[i].recvdataBuf[i], 1, &receiveBytes,
+			&flags, &(clients[i].overlapped), recv_callback) == SOCKET_ERROR)
+		{
+			if (WSAGetLastError() != WSA_IO_PENDING)
+			{
+				cout << "error - Fail WSARecv(error_code : %d) : " << WSAGetLastError() << endl;
+			}
+		}
+	}
+
+}
 
 // 소켓 함수 오류 출력 후 종료
 void err_quit(char* msg)
@@ -79,108 +164,49 @@ void err_display(char* msg)
 	LocalFree(lpMsgBuf);
 }
 
-int recvn(SOCKET s, char* buf, int len, int flags)      // 고정길이 데이터를 읽기 위해 사용자 정의함수 recvn() 함수 사용 ~62라인까지 - 4장에서 사용
+int GetID()
 {
-	int received;
-	char* ptr = buf;
-	int left = len;
-
-	while (left > 0) {
-		received = recv(s, ptr, left, flags);
-		if (received == SOCKET_ERROR)
-			return SOCKET_ERROR;
-		else if (received == 0)
-			break;
-		left -= received;
-		ptr += received;
-	}
-
-	return (len - left);
-}
-
-void RemoveSocketInfo(int nIndex)
-{
-	SOCKINFO* ptr = SocketInfoArray[nIndex];
-
-	// 클라이언트 정보 얻기
-	SOCKADDR_IN clientaddr;
-	int addrlen = sizeof(clientaddr);
-	getpeername(ptr->socket, (SOCKADDR*)&clientaddr, &addrlen);
-	printf("[TCP 서버] 클라이언트 종료: IP 주소=%s, 포트 번호=%d\n",
-		inet_ntoa(clientaddr.sin_addr), ntohs(clientaddr.sin_port));
-
-	closesocket(ptr->socket);
-	delete ptr;
-
-	if (nIndex != (nTotalSockets - 1))
-		SocketInfoArray[nIndex] = SocketInfoArray[nTotalSockets - 1];
-
-	--nTotalSockets;
-}
-
-void send_packet(int key, char* packet)
-{
-	SOCKET client_s = clients[key].socket;
-
-	//OVER_EX* over = reinterpret_cast<OVER_EX*>(malloc(sizeof(OVER_EX)));
-
-	//over->dataBuffer.len = packet[0];
-	//over->dataBuffer.buf = over->messageBuffer;
-	//memcpy(over->messageBuffer, packet, packet[0]);
-	//ZeroMemory(&(over->overlapped), sizeof(WSAOVERLAPPED));
-	//over->is_recv = false;
-	//if (WSASend(client_s, &over->dataBuffer, 1, NULL,
-	//	0, &(over->overlapped), NULL) == SOCKET_ERROR)
-	//{
-	//	if (WSAGetLastError() != WSA_IO_PENDING)
-	//	{
-	//		cout << "Error - Fail WSASend(error_code : ";
-	//		cout << WSAGetLastError() << ")\n";
-	//	}
-	//}
-}
-
-void send_pos_packet(/*char to, char obj*/)
-{
-	sc_packet_pos packet;
-	//packet.id = obj;
-	packet.size = sizeof(packet);
-	packet.type = SC_POS;
-	packet.x = g_x;
-	packet.y = g_y;
-	//send_packet(to, reinterpret_cast<char*>(&packet));
-}
-
-void process_packet(sc_packet_pos pos)
-{
-	int iType = pos.type;
-
-	if (iType < 1 || iType >5)
-		return;
-
-	switch (iType) {
-	case CS_UP:
-		if (pos.y > 0)
+	while (true)
+	{
+		for (int i = 0; i < MAX_CLIENTS; ++i)
 		{
-			pos.y -= BOARD_GAP;
+			if (false == clients[i].connected)
+				return i;
+		}
+	}
+}
+
+void process_packet(int id, char* szMessagebuf)
+{
+	sc_packet_pos* packet = reinterpret_cast<sc_packet_pos*>(szMessagebuf);
+
+	int x = clients[id].x;
+	int y = clients[id].y;
+
+	switch (packet->type)
+	{
+	case CS_UP:
+		if (y > 0)
+		{
+			y -= BOARD_GAP;
 		}
 		break;
 	case CS_DOWN:
-		if (pos.y < BOARD_GAP * 7)
+		if (y < BOARD_GAP * 7)
 		{
-			pos.y += BOARD_GAP;
+			y += BOARD_GAP;
 		}
 		break;
-	case CS_LEFT: 
-		if (0 < pos.x)
+	case CS_LEFT:
+		if (0 < x)
 		{
-			pos.x -= BOARD_GAP;
+			x -= BOARD_GAP;
 		}
 		break;
-	case CS_RIGHT: 
-		if ((BOARD_GAP * 7) > pos.x)
+	case CS_RIGHT:
+		if ((BOARD_GAP * 7) > x)
 		{
-			pos.x += BOARD_GAP;
+			x += BOARD_GAP;
 		}
 		break;
 	default:
@@ -188,30 +214,72 @@ void process_packet(sc_packet_pos pos)
 		break;
 	}
 
-	send(SocketInfoArray[0]->socket, (char*)&pos, sizeof(sc_packet_pos), 0);
+	clients[id].x = x;
+	clients[id].y = y;
 
+	packet->x = x;
+	packet->y = y;
+	packet->id = id;
+	packet->size = packet->size;
+	packet->type = CS_NONE;
+
+	memcpy(clients[id].sendmessageBuf, packet, sizeof(struct sc_packet_pos));
 
 }
 
-bool AddSocketInfo(SOCKET sock)
+void login_packet(int id, SOCKET soc)
 {
-	if (nTotalSockets >= FD_SETSIZE) {
-		printf("[오류] 소켓 정보를 추가할 수 없습니다!\n");
-		return FALSE;
+	int iIdx = -1;
+
+	// 로긴 함수로 빼기
+	for (int i = 0; i <= g_iCurID; ++i)
+	{
+		if (clients[i].socket == soc && !clients[i].connected)
+		{
+			sc_packet_login packet;
+			packet.size = sizeof(sc_packet_login);
+			packet.type = SC_LOGIN;
+			packet.id = i;
+			clients[i].connected = true;
+
+			DWORD dataBytes = packet.size;
+
+			memcpy(clients[i].sendmessageBuf, &packet, sizeof(struct sc_packet_login));
+
+			for (int j = 0; j <= i; ++j) // 이런식으로 wsasend함수 호출해도 되는지
+			{
+				if (clients[j].connected)
+				{
+					WSASend(clients[j].socket, &(clients[i].senddataBuf[i]), 1, &dataBytes, 0,
+						&(clients[i].overlapped), send_callback);
+				}
+			}
+
+			iIdx = i;
+			break;
+		}
 	}
 
-	SOCKINFO* ptr = new SOCKINFO;
-	if (ptr == NULL) {
-		printf("[오류] 메모리가 부족합니다!\n");
-		return FALSE;
+	// 이전 애들 넣어주는것으로 빼기
+	for (int i = 0; i <= g_iCurID; ++i)
+	{
+		if (clients[i].connected)
+		{
+			sc_packet_pos pospacket;
+			pospacket.size = sizeof(sc_packet_pos);
+			pospacket.id = i;
+			pospacket.x = clients[i].x;
+			pospacket.y = clients[i].y;
+
+			DWORD dataBytes = pospacket.size;
+
+			memcpy(clients[i].sendmessageBuf, &pospacket, sizeof(struct sc_packet_pos));
+
+			// 이런식으로 wsasend함수 호출해도 되는지
+			WSASend(clients[iIdx].socket, &(clients[i].senddataBuf[i]), 1, &dataBytes, 0,
+				&(clients[i].overlapped), send_callback);
+		}
 	}
-
-	ptr->socket = sock;
-	ptr->recvbytes = 0;
-	ptr->sendbytes = 0;
-	SocketInfoArray[nTotalSockets++] = ptr;
-
-	return TRUE;
 }
 
 DWORD WINAPI WorkerThread(LPVOID arg)
@@ -227,7 +295,7 @@ DWORD WINAPI WorkerThread(LPVOID arg)
 		//초당 20번 전송
 		if (durationMs > 50)
 		{
-			process_packet(pos);
+			//process_packet(pos);
 			last_time = chrono::high_resolution_clock::now();
 		}
 	}
@@ -240,142 +308,97 @@ int main()
 	int retval = 0;
 
 	HANDLE hThread = NULL;
-	hThread = CreateThread(NULL, 0, WorkerThread, NULL, 0, NULL);
+	//hThread = CreateThread(NULL, 0, WorkerThread, NULL, 0, NULL);
 
 	WSADATA WSAData;
 	if (WSAStartup(MAKEWORD(2, 2), &WSAData) != 0)
 	{
-		cout << "Error - Can not load 'winsock.dll' file\n";
+		cout << "error - Can not load 'winsock.dll' file\n";
 		return 0;
 	}
 
-	SOCKET listenSocket = socket(AF_INET, SOCK_STREAM, 0); // 변경
+	SOCKET listenSocket = WSASocketW(AF_INET, SOCK_STREAM, 0, NULL, 0, WSA_FLAG_OVERLAPPED);
 	if (listenSocket == INVALID_SOCKET)
 	{
-		cout << "Error - Invalid socket\n";
+		cout << "error - Invalid socket\n";
 		return 0;
 	}
 
-	// 서버정보 객체설정 // 변경
+	// 서버정보 객체설정 
 	SOCKADDR_IN serverAddr;
 	memset(&serverAddr, 0, sizeof(SOCKADDR_IN));
 	serverAddr.sin_family = AF_INET;
 	serverAddr.sin_addr.s_addr = htonl(INADDR_ANY);
 	serverAddr.sin_port = htons(SERVER_PORT);
 
-	//// 2. 소켓설정
-	//if (::bind(listenSocket, (struct sockaddr*) & serverAddr, sizeof(SOCKADDR_IN)) == SOCKET_ERROR)
-	//{
-	//	cout << "Error - Fail bind\n";
-	//	// 6. 소켓종료
-	//	closesocket(listenSocket);
-	//	// Winsock End
-	//	WSACleanup();
-	//	return 0;
-	//}
-
-		// bind()
+	// bind()
 	SOCKADDR_IN serveraddr;
 	ZeroMemory(&serveraddr, sizeof(serveraddr));
 	serveraddr.sin_family = AF_INET;
 	serveraddr.sin_addr.s_addr = htonl(INADDR_ANY);
 	serveraddr.sin_port = htons(SERVER_PORT);
 	retval = bind(listenSocket, (SOCKADDR*)&serveraddr, sizeof(serveraddr));
-	if (retval == SOCKET_ERROR) err_quit("bind()");
+	if (retval == SOCKET_ERROR)
+		err_quit("error - bind()");
 
-	// listen()
-	retval = listen(listenSocket, SOMAXCONN);
-	if (retval == SOCKET_ERROR) err_quit("listen()");
+	// 수신 대기열
+	if (listen(listenSocket, 10) == SOCKET_ERROR)
+	{
+		cout << "error - listen() wait" << endl;
+		closesocket(listenSocket);
+		WSACleanup();
+		return 0;
+	}
 
-	// 넌블로킹 소켓으로 전환
-	//********************************************************
-	u_long on = 1;
-	retval = ioctlsocket(listenSocket, FIONBIO, &on); // 교착상태 해결하기 위함, 여기서 쓸 필요는 없을듯
-	if (retval == SOCKET_ERROR) err_display("ioctlsocket()");
 
-
-	//// 3. 수신대기열생성
-	//if (listen(listenSocket, 5) == SOCKET_ERROR)
-	//{
-	//	cout << "Error - Fail listen\n";
-	//	// 6. 소켓종료
-	//	closesocket(listenSocket);
-	//	// Winsock End
-	//	WSACleanup();
-	//	return;
-	//}
-
-	SOCKADDR_IN clientAddr;
-	int addrLen = sizeof(SOCKADDR_IN);
-	memset(&clientAddr, 0, addrLen);
-	SOCKET clientSocket;
-
-	//********************************************************
-	FD_SET rset, wset;
-	//********************************************************
-	SOCKET client_sock;
 	SOCKADDR_IN clientaddr;
-	int addrlen, i;
-	int iClientID = -1;
+	int addrLen = sizeof(SOCKADDR_IN);
+	memset(&clientaddr, 0, addrLen);
+	SOCKET clientSocket;
+	DWORD flags;
 
 
-	while (1) {
-		// 소켓 셋 초기화
-		FD_ZERO(&rset);
-		FD_ZERO(&wset);
-		FD_SET(listenSocket, &rset); // fd_set은 관찰을 할 소켓들을 등록하는 변수
-		for (i = 0; i < nTotalSockets; i++) {
-			if (SocketInfoArray[i]->recvbytes > SocketInfoArray[i]->sendbytes)
-				FD_SET(SocketInfoArray[i]->socket, &wset);
-			else
-				FD_SET(SocketInfoArray[i]->socket, &rset);
+	while (true)
+	{
+		clientSocket = accept(listenSocket, (SOCKADDR*)&clientaddr, &addrLen);
+		if (clientSocket == INVALID_SOCKET) {
+			err_display("error - accept()");
 		}
 
-		// select()
-		retval = select(0, &rset, &wset, NULL, NULL); // 대기 시간 0 // 블로킹이던 아니던 신경 안쓰고 여러 소켓 한 스레드로 처리
-		if (retval == SOCKET_ERROR) err_quit("select()");
+		int id = GetID();
+		g_iCurID = id;
 
-		// 소켓 셋 검사(1): 클라이언트 접속 수용
-		if (FD_ISSET(listenSocket, &rset)) { // 변화가 있는지를 확인
-			addrlen = sizeof(clientaddr);
-			client_sock = accept(listenSocket, (SOCKADDR*)&clientaddr, &addrlen);
-			if (client_sock == INVALID_SOCKET) {
-				err_display("accept()");
-			}
-			else {
-				u_long off = 0;
+		clients[id] = SOCKETINFO{};
+		clients[id].socket = clientSocket;
+		clients[id].senddataBuf[id].len = MAX_BUFFER;
+		clients[id].senddataBuf[id].buf = clients[id].sendmessageBuf;
+		clients[id].recvdataBuf[id].len = MAX_BUFFER;
+		clients[id].recvdataBuf[id].buf = clients[id].recvmessageBuf;
+		memset(&clients[id].overlapped, 0, sizeof(WSAOVERLAPPED));
+		clients[id].overlapped.hEvent = (HANDLE)clients[id].socket;
 
-				retval = ioctlsocket(client_sock, FIONBIO, &off); // 인자를 off로 하는 이유가? // 교착상태 해결하기 위함, off 매개변수가 0이 아닐 경우 client_sock의 넌블럭킹(비동기) 모드를 활성화 함. off가 0일 경우는 넌블럭킹(비동기) 모드는 비활성화 됨. argp 매개변수는 unsigned long 값을 포인트 함.
-				if (retval == SOCKET_ERROR) err_display("ioctlsocket()");
+		clients[id].x = 0;
+		clients[id].y = 0;
 
-				printf("\n[TCP 서버] 클라이언트 접속: IP 주소=%s, 포트 번호=%d\n",
-					inet_ntoa(clientaddr.sin_addr), ntohs(clientaddr.sin_port));
-				// 소켓 정보 추가
-				AddSocketInfo(client_sock);
-				g_connect = true;
+		login_packet(id, clientSocket);
 
+		DWORD flags = 0;
+
+		cout << id << "번 클라이언트 입장" << endl;
+
+		if (WSARecv(clients[id].socket, &clients[id].recvdataBuf[id], 1
+			, NULL, &flags, &(clients[id].overlapped), recv_callback)) // 일단 한개 클라
+		{
+			if (WSAGetLastError() != WSA_IO_PENDING)
+			{
+				cout << "error - IO pending failure" << endl;
+				return 0;
 			}
 		}
-
-		// 소켓 셋 검사(2): 데이터 통신
-		for (int i = 0; i < nTotalSockets; i++) {
-			SOCKINFO* ptr = SocketInfoArray[i];
-			if (FD_ISSET(ptr->socket, &rset)) {
-
-				retval = recvn(ptr->socket, (char*)&pos, sizeof(sc_packet_pos), 0); // 키 받음
-				//std::cout << a << endl;
-				if (pos.type != 0)
-				{
-					std::cout << (int)pos.size << " , " << (int)pos.type<< " , " << (int)pos.x  << " , " <<(int)pos.y<< endl;
-				}
-				//send(ptr->sock, (char*)&gameinfo, sizeof(GAMEINFO), 0);
-
-				if (retval == SOCKET_ERROR) {
-					err_display("recvKeystate()");
-					RemoveSocketInfo(i);
-					continue;
-				}
-			}
+		else
+		{
+			cout << "non overlapped recv return" << endl;
+			return 0;
 		}
 	}
 
@@ -388,5 +411,3 @@ int main()
 	WSACleanup();
 	return 0;
 }
-
-// 로그인 부분 고치기 // 패킷 종류별로 나누기 // id 넣기 

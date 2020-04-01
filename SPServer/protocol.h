@@ -21,19 +21,26 @@
 #define CS_LEFT		3
 #define CS_RIGHT	4
 
+#define SC_LOGIN	1
 #define SC_POS		2
+#pragma pack(push ,1)
 
 struct sc_packet_pos
 {
 	char size;
 	char type;
-	//char id;
-	char x;
-	char y;
+	char id;
+	char x, y;
 };
 
-#pragma pack(push ,1)
-struct cs_packet_keyinput
+struct sc_packet_login
+{
+	char size;
+	char type;
+	char id;
+};
+
+struct cs_packet_right
 {
 	char size;
 	char type;
@@ -41,26 +48,20 @@ struct cs_packet_keyinput
 
 struct cs_packet_up
 {
-	char	size;
-	char	type;
-};
-
-struct cs_packet_down
-{
-	char	size;
-	char	type;
+	char size;
+	char type;
 };
 
 struct cs_packet_left
 {
-	char	size;
-	char	type;
+	char size;
+	char type;
 };
 
-struct cs_packet_right
+struct cs_packet_down
 {
-	char	size;
-	char	type;
+	char size;
+	char type;
 };
 
 #pragma pack (pop)

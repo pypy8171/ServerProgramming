@@ -23,6 +23,7 @@
 
 #define SC_LOGIN	1
 #define SC_POS		2
+#define SC_LOGOUT	3
 #pragma pack(push ,1)
 
 struct sc_packet_pos
@@ -34,6 +35,13 @@ struct sc_packet_pos
 };
 
 struct sc_packet_login
+{
+	char size;
+	char type;
+	char id;
+};
+
+struct sc_packet_logout
 {
 	char size;
 	char type;

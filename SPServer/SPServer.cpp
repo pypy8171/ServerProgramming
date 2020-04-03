@@ -36,6 +36,7 @@ void err_display(char* msg);
 int GetID();
 void process_packet(int id, char* szMessagebuf);
 void login_packet(int id, SOCKET soc);
+void logout_packet(int id, SOCKET soc);
 
 void CALLBACK recv_callback(DWORD Error, DWORD dataBytes, LPWSAOVERLAPPED oerlapped, DWORD lnFlags);
 void CALLBACK send_callback(DWORD Error, DWORD dataBytes, LPWSAOVERLAPPED oerlapped, DWORD lnFlags);
@@ -61,7 +62,7 @@ void recv_callback(DWORD Error, DWORD dataBytes, LPWSAOVERLAPPED overlapped, DWO
 
 	int iIdx = -1;
 
-	for (int i = 0; i < g_iCurID + 1; ++i)
+	for (int i = 0; i < MAX_CLIENTS; ++i)
 	{
 		if (client_s == clients[i].socket) //
 		{
@@ -71,22 +72,31 @@ void recv_callback(DWORD Error, DWORD dataBytes, LPWSAOVERLAPPED overlapped, DWO
 			clients[i].recvdataBuf[i].len = dataBytes;
 			memset(&(clients[i].overlapped), 0x00, sizeof(WSAOVERLAPPED));
 			clients[i].overlapped.hEvent = (HANDLE)client_s;
-
-			process_packet(i, clients[i].recvmessageBuf);
-			iIdx = i;
+			
+			if (dataBytes == 3)
+			{
+				logout_packet(i, client_s);
+				//return;
+			}
+			else if (dataBytes == 5)
+			{
+				process_packet(i, clients[i].recvmessageBuf);
+			}
+				iIdx = i;
 		}
 	}
 
-	for (int i = 0; i < g_iCurID + 1; ++i)
+	for (int i = 0; i < MAX_CLIENTS; ++i)
 	{
-		//if(clients[i].connected)
-
-		if (WSASend(clients[i].socket, &(clients[iIdx].senddataBuf[iIdx]), g_iCurID + 1, &dataBytes, 0,
-			&(clients[i].overlapped), send_callback) == SOCKET_ERROR)
+		if (clients[i].connected)
 		{
-			if (WSAGetLastError() != WSA_IO_PENDING)
+			if (WSASend(clients[i].socket, &(clients[iIdx].senddataBuf[iIdx]), 1, &dataBytes, 0,
+				&(clients[i].overlapped), send_callback) == SOCKET_ERROR)
 			{
-				cout << "error - Fail WSASend(error_code : %d) : " << WSAGetLastError() << endl;
+				if (WSAGetLastError() != WSA_IO_PENDING)
+				{
+					cout << "error - Fail WSASend(error_code : %d) : " << WSAGetLastError() << endl;
+				}
 			}
 		}
 	}
@@ -121,16 +131,17 @@ void send_callback(DWORD Error, DWORD dataBytes, LPWSAOVERLAPPED overlapped, DWO
 		}
 	}
 
-	for (int i = 0; i < g_iCurID + 1; ++i)
+	for (int i = 0; i < MAX_CLIENTS; ++i)
 	{
-		//if(clients[i].connected)
-
-		if (WSARecv(clients[i].socket, &clients[i].recvdataBuf[i], 1, &receiveBytes,
-			&flags, &(clients[i].overlapped), recv_callback) == SOCKET_ERROR)
+		if (clients[i].connected)
 		{
-			if (WSAGetLastError() != WSA_IO_PENDING)
+			if (WSARecv(clients[i].socket, &clients[i].recvdataBuf[i], 1, &receiveBytes,
+				&flags, &(clients[i].overlapped), recv_callback) == SOCKET_ERROR)
 			{
-				cout << "error - Fail WSARecv(error_code : %d) : " << WSAGetLastError() << endl;
+				if (WSAGetLastError() != WSA_IO_PENDING)
+				{
+					cout << "error - Fail WSARecv(error_code : %d) : " << WSAGetLastError() << endl;
+				}
 			}
 		}
 	}
@@ -160,7 +171,7 @@ void err_display(char* msg)
 		NULL, WSAGetLastError(),
 		MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
 		(LPTSTR)&lpMsgBuf, 0, NULL);
-	cout << "erroe - " << (char*)lpMsgBuf << endl;
+	cout << "error - " << (char*)lpMsgBuf << endl;
 	LocalFree(lpMsgBuf);
 }
 
@@ -224,15 +235,14 @@ void process_packet(int id, char* szMessagebuf)
 	packet->type = CS_NONE;
 
 	memcpy(clients[id].sendmessageBuf, packet, sizeof(struct sc_packet_pos));
-
 }
 
 void login_packet(int id, SOCKET soc)
 {
 	int iIdx = -1;
 
-	// 로긴 함수로 빼기
-	for (int i = 0; i <= g_iCurID; ++i)
+	// 새로운 클라 들어간다
+	for (int i = 0; i < MAX_CLIENTS; ++i)
 	{
 		if (clients[i].socket == soc && !clients[i].connected)
 		{
@@ -261,7 +271,7 @@ void login_packet(int id, SOCKET soc)
 	}
 
 	// 이전 애들 넣어주는것으로 빼기
-	for (int i = 0; i <= g_iCurID; ++i)
+	for (int i = 0; i <= MAX_CLIENTS; ++i)
 	{
 		if (clients[i].connected)
 		{
@@ -278,6 +288,40 @@ void login_packet(int id, SOCKET soc)
 			// 이런식으로 wsasend함수 호출해도 되는지
 			WSASend(clients[iIdx].socket, &(clients[i].senddataBuf[i]), 1, &dataBytes, 0,
 				&(clients[i].overlapped), send_callback);
+		}
+	}
+}
+
+void logout_packet(int id, SOCKET soc)
+{
+	int iIdx = -1;
+
+	sc_packet_logout packet;
+	packet.size = sizeof(packet);
+	packet.type = SC_LOGOUT;
+	packet.id = id;
+
+	closesocket(clients[id].socket);
+	clients[id].connected = false;
+	clients[id].x = 0.f;
+	clients[id].y = 0.f;
+
+	DWORD dataBytes = packet.size;
+
+	memcpy(clients[id].sendmessageBuf, &packet, sizeof(struct sc_packet_pos));
+
+	for (int j = 0; j < MAX_CLIENTS; ++j)
+	{
+		if (clients[j].connected)
+		{
+			if (WSASend(clients[j].socket, &(clients[id].senddataBuf[id]), 1, &dataBytes, 0,
+				&(clients[j].overlapped), send_callback) == SOCKET_ERROR)
+			{
+				if (WSAGetLastError() != WSA_IO_PENDING)
+				{
+					cout << "error - Fail WSASend(error_code : %d) : " << WSAGetLastError() << endl;
+				}
+			}
 		}
 	}
 }
@@ -350,7 +394,7 @@ int main()
 		return 0;
 	}
 
-
+	
 	SOCKADDR_IN clientaddr;
 	int addrLen = sizeof(SOCKADDR_IN);
 	memset(&clientaddr, 0, addrLen);
@@ -360,13 +404,28 @@ int main()
 
 	while (true)
 	{
+		// 현재 클라수가 10이 넘어가면 accept거부?
+
 		clientSocket = accept(listenSocket, (SOCKADDR*)&clientaddr, &addrLen);
 		if (clientSocket == INVALID_SOCKET) {
 			err_display("error - accept()");
 		}
+		
+		int iCount = 0;
+
+		for (int i = 0; i < MAX_CLIENTS; ++i)
+		{
+			if (clients[i].connected)
+				++iCount;
+		}
+
+		if (iCount == MAX_CLIENTS)
+		{
+			cout << "최대 클라이언트 수를 넘었습니다." << endl;
+			continue;
+		}
 
 		int id = GetID();
-		g_iCurID = id;
 
 		clients[id] = SOCKETINFO{};
 		clients[id].socket = clientSocket;

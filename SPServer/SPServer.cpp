@@ -17,8 +17,8 @@ using namespace std;
 struct SOCKETINFO
 {
 	WSAOVERLAPPED	overlapped;
-	WSABUF			senddataBuf[MAX_CLIENTS];
-	WSABUF			recvdataBuf[MAX_CLIENTS];
+	WSABUF			senddataBuf;
+	WSABUF			recvdataBuf;
 	SOCKET			socket;
 	char			recvmessageBuf[MAX_BUFFER];
 	char			sendmessageBuf[MAX_BUFFER];
@@ -67,22 +67,21 @@ void recv_callback(DWORD Error, DWORD dataBytes, LPWSAOVERLAPPED overlapped, DWO
 		if (client_s == clients[i].socket) //
 		{
 			clients[i].recvmessageBuf[dataBytes] = 0;
-			cout << "from clients : " << clients[i].recvmessageBuf << " (" << dataBytes << ") bytes)" << endl;
+			cout << "from clients : " /*<< clients[i].recvmessageBuf*/ << " (" << dataBytes << ") bytes)" << endl;
 
-			clients[i].recvdataBuf[i].len = dataBytes;
-			memset(&(clients[i].overlapped), 0x00, sizeof(WSAOVERLAPPED));
-			clients[i].overlapped.hEvent = (HANDLE)client_s;
+			clients[i].recvdataBuf.len = dataBytes;
+			memset(&(clients[i].overlapped), 0x00, sizeof(WSAOVERLAPPED)); // 재사용하므로 초기화
+			clients[i].overlapped.hEvent = (HANDLE)client_s; // 초기화 되었으므로 이벤트에 소켓을 넣어줌
 			
-			if (dataBytes == 3)
+			if (dataBytes == sizeof(sc_packet_logout))
 			{
 				logout_packet(i, client_s);
-				//return;
 			}
-			else if (dataBytes == 5)
+			else if (dataBytes == sizeof(sc_packet_pos))
 			{
 				process_packet(i, clients[i].recvmessageBuf);
 			}
-				iIdx = i;
+			iIdx = i;
 		}
 	}
 
@@ -90,14 +89,27 @@ void recv_callback(DWORD Error, DWORD dataBytes, LPWSAOVERLAPPED overlapped, DWO
 	{
 		if (clients[i].connected)
 		{
-			if (WSASend(clients[i].socket, &(clients[iIdx].senddataBuf[iIdx]), 1, &dataBytes, 0,
-				&(clients[i].overlapped), send_callback) == SOCKET_ERROR)
+			WSAOVERLAPPED* overlappedSend = new WSAOVERLAPPED();
+			overlappedSend->hEvent = (HANDLE)(clients[i].socket);
+
+			if(WSASend(clients[i].socket, &(clients[iIdx].senddataBuf), 1, 0, 0, overlappedSend, send_callback))
 			{
 				if (WSAGetLastError() != WSA_IO_PENDING)
 				{
 					cout << "error - Fail WSASend(error_code : %d) : " << WSAGetLastError() << endl;
 				}
 			}
+
+			//delete overlappedSend;
+
+			//if (WSASend(clients[i].socket, &(clients[iIdx].senddataBuf), 1, &dataBytes, 0,
+			//	&(clients[i].overlapped), send_callback) == SOCKET_ERROR)
+			//{
+			//	if (WSAGetLastError() != WSA_IO_PENDING)
+			//	{
+			//		cout << "error - Fail WSASend(error_code : %d) : " << WSAGetLastError() << endl;
+			//	}
+			//}
 		}
 	}
 }
@@ -106,7 +118,7 @@ void send_callback(DWORD Error, DWORD dataBytes, LPWSAOVERLAPPED overlapped, DWO
 {
 	DWORD sendBytes = 0;
 	DWORD receiveBytes = 0;
-	DWORD flags = 0;
+	DWORD flags = 0; // lpnumberofdata 가 0이 아니면 동기식으로 작동함
 
 	SOCKET client_s = reinterpret_cast<int>(overlapped->hEvent);
 
@@ -117,25 +129,30 @@ void send_callback(DWORD Error, DWORD dataBytes, LPWSAOVERLAPPED overlapped, DWO
 		return;
 	}  // 클라이언트가 closesocket을 했을 경우
 
+
 	// WSASend(응답에 대한)의 콜백일 경우
+	//for (int i = 0; i < MAX_CLIENTS; ++i)
+	//{
+	//	if (client_s == clients[i].socket) //
+	//	{
+	//		clients[i].senddataBuf[i].len = MAX_BUFFER;
+	//		clients[i].senddataBuf[i].buf = clients[i].sendmessageBuf;
+
+	//		cout << "trace - Send message : " << clients[i].sendmessageBuf << " (" << dataBytes << " bytes)" << endl;
+	//		memset(&(clients[i].overlapped), 0x00, sizeof(WSAOVERLAPPED));
+	//		clients[i].overlapped.hEvent = (HANDLE)client_s;
+	//	}
+	//}
+
+	// 왜 이게 들어가야만 돌아가는지
 	for (int i = 0; i < MAX_CLIENTS; ++i)
 	{
-		if (client_s == clients[i].socket) //
+		if (client_s == clients[i].socket/*clients[i].connected*/)
 		{
-			clients[i].senddataBuf[i].len = MAX_BUFFER;
-			clients[i].senddataBuf[i].buf = clients[i].sendmessageBuf;
-
-			cout << "trace - Send message : " << clients[i].sendmessageBuf << " (" << dataBytes << " bytes)" << endl;
 			memset(&(clients[i].overlapped), 0x00, sizeof(WSAOVERLAPPED));
 			clients[i].overlapped.hEvent = (HANDLE)client_s;
-		}
-	}
 
-	for (int i = 0; i < MAX_CLIENTS; ++i)
-	{
-		if (clients[i].connected)
-		{
-			if (WSARecv(clients[i].socket, &clients[i].recvdataBuf[i], 1, &receiveBytes,
+			if (WSARecv(clients[i].socket, &clients[i].recvdataBuf, 1, &receiveBytes,
 				&flags, &(clients[i].overlapped), recv_callback) == SOCKET_ERROR)
 			{
 				if (WSAGetLastError() != WSA_IO_PENDING)
@@ -146,6 +163,9 @@ void send_callback(DWORD Error, DWORD dataBytes, LPWSAOVERLAPPED overlapped, DWO
 		}
 	}
 
+	delete overlapped;
+
+	//delete overlapped;
 }
 
 // 소켓 함수 오류 출력 후 종료
@@ -260,8 +280,11 @@ void login_packet(int id, SOCKET soc)
 			{
 				if (clients[j].connected)
 				{
-					WSASend(clients[j].socket, &(clients[i].senddataBuf[i]), 1, &dataBytes, 0,
-						&(clients[i].overlapped), send_callback);
+					WSAOVERLAPPED* overlappedSend = new WSAOVERLAPPED();
+					overlappedSend->hEvent = (HANDLE)(clients[j].socket);
+
+					WSASend(clients[j].socket, &(clients[i].senddataBuf), 1, 0, 0,
+						overlappedSend, send_callback);
 				}
 			}
 
@@ -285,9 +308,12 @@ void login_packet(int id, SOCKET soc)
 
 			memcpy(clients[i].sendmessageBuf, &pospacket, sizeof(struct sc_packet_pos));
 
+			WSAOVERLAPPED* overlappedSend = new WSAOVERLAPPED();
+			overlappedSend->hEvent = (HANDLE)(clients[i].socket);
+
 			// 이런식으로 wsasend함수 호출해도 되는지
-			WSASend(clients[iIdx].socket, &(clients[i].senddataBuf[i]), 1, &dataBytes, 0,
-				&(clients[i].overlapped), send_callback);
+			WSASend(clients[iIdx].socket, &(clients[i].senddataBuf), 1, 0, 0,
+				overlappedSend, send_callback);
 		}
 	}
 }
@@ -310,20 +336,6 @@ void logout_packet(int id, SOCKET soc)
 
 	memcpy(clients[id].sendmessageBuf, &packet, sizeof(struct sc_packet_pos));
 
-	for (int j = 0; j < MAX_CLIENTS; ++j)
-	{
-		if (clients[j].connected)
-		{
-			if (WSASend(clients[j].socket, &(clients[id].senddataBuf[id]), 1, &dataBytes, 0,
-				&(clients[j].overlapped), send_callback) == SOCKET_ERROR)
-			{
-				if (WSAGetLastError() != WSA_IO_PENDING)
-				{
-					cout << "error - Fail WSASend(error_code : %d) : " << WSAGetLastError() << endl;
-				}
-			}
-		}
-	}
 }
 
 DWORD WINAPI WorkerThread(LPVOID arg)
@@ -411,6 +423,8 @@ int main()
 			err_display("error - accept()");
 		}
 		
+		// 여기에 들어가면 안될듯 
+
 		int iCount = 0;
 
 		for (int i = 0; i < MAX_CLIENTS; ++i)
@@ -429,10 +443,10 @@ int main()
 
 		clients[id] = SOCKETINFO{};
 		clients[id].socket = clientSocket;
-		clients[id].senddataBuf[id].len = MAX_BUFFER;
-		clients[id].senddataBuf[id].buf = clients[id].sendmessageBuf;
-		clients[id].recvdataBuf[id].len = MAX_BUFFER;
-		clients[id].recvdataBuf[id].buf = clients[id].recvmessageBuf;
+		clients[id].senddataBuf.len = MAX_BUFFER;
+		clients[id].senddataBuf.buf = clients[id].sendmessageBuf;
+		clients[id].recvdataBuf.len = MAX_BUFFER;
+		clients[id].recvdataBuf.buf = clients[id].recvmessageBuf;
 		memset(&clients[id].overlapped, 0, sizeof(WSAOVERLAPPED));
 		clients[id].overlapped.hEvent = (HANDLE)clients[id].socket;
 
@@ -445,7 +459,7 @@ int main()
 
 		cout << id << "번 클라이언트 입장" << endl;
 
-		if (WSARecv(clients[id].socket, &clients[id].recvdataBuf[id], 1
+		if (WSARecv(clients[id].socket, &clients[id].recvdataBuf, 1
 			, NULL, &flags, &(clients[id].overlapped), recv_callback)) // 일단 한개 클라
 		{
 			if (WSAGetLastError() != WSA_IO_PENDING)

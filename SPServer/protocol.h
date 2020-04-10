@@ -26,12 +26,12 @@
 #define SC_LOGOUT	3
 #pragma pack(push ,1)
 
-struct sc_packet_pos
+struct sc_packet_pos // x,y 는 short 로 하는듯
 {
 	char size;
 	char type;
 	char id;
-	char x, y;
+	short x, y;
 };
 
 struct sc_packet_login
